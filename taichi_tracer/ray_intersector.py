@@ -12,7 +12,7 @@ from .ray import Ray, HitData
 class RayIntersector(ABC):
 
     def __init__(self, geometry: Geometry):
-        self.EPSILON = 1e-7
+        self.EPSILON = 1e-6
         self.geometry = geometry
 
 
@@ -53,7 +53,7 @@ class RayIntersector(ABC):
 
         hit_data.is_hit = False
         if det != 0:
-          det_inv = 1 / det
+          det_inv = 1. / det
           o_v0 = (o - v0)
           u = det_inv * (o_v0.dot(d.cross(e_2)))
           v = det_inv * (d.dot(o_v0.cross(e_1)))

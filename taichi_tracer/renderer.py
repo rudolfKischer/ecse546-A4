@@ -780,7 +780,7 @@ class A4Renderer:
         scene_data: SceneData
         ) -> None:
 
-        self.RAY_OFFSET = 1e-4
+        self.RAY_OFFSET = 1e-5
 
         self.width = width
         self.height = height
@@ -851,21 +851,29 @@ class A4Renderer:
     def shade_ray_brdf(self, w_i: tm.vec3, w_o: tm.vec3,  hit_data: HitData, mat: Material) -> tm.vec3:
         normal = hit_data.normal.normalized()
         brdf = self.BRDF
+        k_d = mat.Kd
+        k_s = mat.Ks
+        a = mat.Ns
 
-        f_r = self.phong_brdf(hit_data, w_i, w_o)
-        p_brdf = brdf.evaluate_probability(mat, w_o, w_i, normal)
+        # f_r = self.phong_brdf(hit_data, w_i, w_o)
+        # p_brdf = brdf.evaluate_probability(mat, w_o, w_i, normal)
         cos_theta = max(w_o.dot(normal), 0)
         # cos_theta = 1.0
 
         color = tm.vec3(0.0)
-        if p_brdf != 0.0:
-          color = (f_r) * cos_theta / (p_brdf)
+        # if p_brdf != 0.0:
+        #   color = (f_r) * cos_theta / (p_brdf)
 
-        if color[0] > 1.0 or color[1] > 1.0 or color[2] > 1.0:
-            rho_s = mat.Kd
-            color = cos_theta * rho_s 
+        # if color[0] > 1.0 or color[1] > 1.0 or color[2] > 1.0:
+        #     rho_s = mat.Kd
+        #     color = cos_theta * rho_s 
         
-        color = f_r * cos_theta / p_brdf
+        # color = f_r * cos_theta / p_brdf
+        # numerator and denominator cancel out
+        if a > 1:
+            color = k_d * cos_theta
+        else:
+            color = k_d * cos_theta
 
         return color
     
@@ -880,8 +888,10 @@ class A4Renderer:
         light_normal = hit_data.normal.normalized()
         light_cos_theta = max(light_normal.dot(w_i), 0)
         light_luminance = mat.Ke
-        if light_dist != 0.0 and light_dist > 0.2:
-          color = light_luminance * light_cos_theta / (light_dist**2)
+        if light_dist != 0.0:
+          color = light_luminance * light_cos_theta / ((light_dist + 0.1)) ** 2.
+        
+
 
         return color
     
@@ -933,7 +943,7 @@ class A4Renderer:
         in_ray = ray
         cur_bounce = 0.
         env_map = self.scene_data.environment
-        while cur_bounce < self.max_bounces[None]:
+        while cur_bounce <= self.max_bounces[None]:
             
             # get hit data
             hit_data = self.scene_data.ray_intersector.query_ray(in_ray)
@@ -969,8 +979,11 @@ class A4Renderer:
             # w_o = self.UNIFORM.sample_direction()
             
             t = self.shade_ray_brdf(w_i, w_o, hit_data, mat) # get throughput at this point of intersection
+            normal = hit_data.normal.normalized()
+            # normal_color = (normal + tm.vec3(1.0)) * 0.5
             T *= t
             out_ray = Ray(p + self.RAY_OFFSET * w_o, w_o.normalized())
+            # out_ray = Ray(p, w_o.normalized())
 
             # Update ray
             in_ray = out_ray
@@ -991,8 +1004,6 @@ class A4Renderer:
         # ray is the primary ray
         # cur ray is the current ray we are tracing in our path
         in_ray = ray
-        cur_ray_is_light_ray = False
-        cur_light_triangle_id = -1
         cur_bounce = 0
         env_map = self.scene_data.environment
         while cur_bounce < self.max_bounces[None]:
@@ -1017,64 +1028,62 @@ class A4Renderer:
                 break
             
             w_i = -in_ray.direction.normalized()
-
-            if cur_ray_is_light_ray:
-                # if we hit the correct light, we add the emission
-                if hit_data.triangle_id == cur_light_triangle_id:
-                  L += T * self.shade_ray_light_sampling(w_i, hit_data, mat, cur_light_triangle_id)
-                # we stop either way if this is a light ray
-                break
             
             # if we are not a light ray, and we hit a light source, stop the path
             if luminosity > 0.0:
                 if cur_bounce == 0:
                     L += T * rho_e
-                break
+                    break
             
             q = self.rr_termination_probabilty[None]
-
-            # throughput_p = T.norm()
-            # q = 1.0 - throughput_p
 
             # perform russian roulette
             if ti.random() < q:
                 break
             
-            # sample light randomly 50 50
-            sample_light = ti.random() < 0.5
-            # sample_light = True
 
             w_o = hit_data.normal.normalized() # initialize w_o to the normal
 
             t = tm.vec3(1.0)
 
-            # 
+            # DIRECT LIGHTING
+            # ===========================================
+            light_direction, light_triangle_id  = self.MLS.sample_direction(p)
+            w_l = light_direction.normalized()
+            f_r = self.phong_brdf(hit_data, w_i, w_l)
+            cos_theta = max(w_l.dot(hit_data.normal), 0)
+            p_r = self.MLS.evaluate_probability()
+            light_ray = Ray(p + self.RAY_OFFSET * w_l, w_l.normalized())
+            light_hit_data = self.scene_data.ray_intersector.query_ray(light_ray)
+            light_mat = self.scene_data.material_library.materials[light_hit_data.material_id]
+            light_luminance = light_mat.Ke
+            light_distance = (light_hit_data.distance + 0.1)
+            light_cos_theta = max((-w_l).dot(light_hit_data.normal), 0)
+            t_l = f_r * cos_theta / p_r
+            l_e = light_luminance * light_cos_theta / (light_distance**2)
+            l = t_l * l_e
+            # clamp light
+            l = tm.clamp(l, 0.0, 1.0)
+            if light_hit_data.triangle_id == light_triangle_id:
+                L += T * l
+            # ==========================================
 
-            if sample_light:
-                light_direction, light_triangle_id  = self.MLS.sample_direction(p)
-                w_o = light_direction.normalized()
-                cur_ray_is_light_ray = True
-                cur_light_triangle_id = light_triangle_id
-                f_r = self.phong_brdf(hit_data, w_i, w_o)
-                cos_theta = max(w_o.dot(hit_data.normal), 0)  
-                p_r = self.MLS.evaluate_probability()
-                t = f_r * cos_theta / p_r
-            else:
-                while True:
-                  w_o = self.BRDF.sample_direction(mat, w_i, hit_data.normal) # outgoing direction
-                  test_ray = Ray(p + self.RAY_OFFSET * w_o, w_o.normalized())
-                  test_hit_data = self.scene_data.ray_intersector.query_ray(test_ray)
-                  mat_test = self.scene_data.material_library.materials[test_hit_data.material_id]
-                  # break only if we found a ray not in the light cone
-                  if mat_test.Ke.norm() <= 0.0:
-                    break
-                      
-                cur_ray_is_light_ray = False
-                cur_light_triangle_id = -1
-                t = self.shade_ray_brdf(w_i, w_o, hit_data, mat)
 
-            normal_color = hit_data.normal.normalized()
-            normal_color = (normal_color + tm.vec3(1.0)) * 0.5
+            # Indirect Lighting
+            # =========================================
+            # find a direction thats not a light
+            attemps = 0
+            while attemps < 10:
+              w_o = self.BRDF.sample_direction(mat, w_i, hit_data.normal) # outgoing direction
+              test_ray = Ray(p + self.RAY_OFFSET * w_o, w_o.normalized())
+              test_hit_data = self.scene_data.ray_intersector.query_ray(test_ray)
+              mat_test = self.scene_data.material_library.materials[test_hit_data.material_id]
+              # break only if we found a ray not in the light cone
+              if mat_test.Ke.norm() <= 0.0:
+                break
+              attemps += 1
+                  
+            t = self.shade_ray_brdf(w_i, w_o, hit_data, mat)
             T *= t
                    
             # get throughput at this point of intersection
